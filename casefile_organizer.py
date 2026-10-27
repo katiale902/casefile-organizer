@@ -84,6 +84,29 @@ def export_report(records):
     print(f"Report saved to {filename}")
 
 
+def add_case(records):
+    case_id = input("Enter case ID: ").strip().upper()
+
+    # Prevent duplicate case IDs
+    for case in records:
+        if case["case_id"].upper() == case_id:
+            print("Error: That case ID already exists.")
+            return
+
+    category = input("Enter case category: ").strip()
+    status = input("Enter status (Open, Pending, Closed): ").strip().title()
+    priority = input("Enter priority (High, Medium, Low): ").strip().title()
+
+    new_case = {
+        "case_id": case_id,
+        "category": category,
+        "status": status,
+        "priority": priority,
+    }
+
+    records.append(new_case)
+    print(f"Case {case_id} added successfully.")
+
 def main():
     while True:
         print("\n=== CASEFILE ORGANIZER ===")
