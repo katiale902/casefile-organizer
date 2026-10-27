@@ -115,7 +115,9 @@ def main():
         print("3. Filter by status")
         print("4. Export CSV report")
         print("5. Exit")
-
+        print("6. Add a new case")
+        elif choice == "6":
+    add_case(cases)
         choice = input("Choose an option: ").strip()
 
         if choice == "1":
