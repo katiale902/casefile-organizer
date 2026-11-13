@@ -1,1 +1,154 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CASEFILE | Criminal Defense</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="brand">CASEFILE<span>.</span></div>
+    <p class="subtitle">CRIMINAL DEFENSE WORKSPACE</p>
+
+    <nav>
+      <a href="/">◫ Dashboard</a>
+      <a href="/">▤ All Cases</a>
+      <a href="/export">↓ Export Cases</a>
+    </nav>
+
+    <div class="sidebar-bottom">PRIVATE LOCAL WORKSPACE<br>Prototype v1.0</div>
+  </aside>
+
+  <main class="main">
+    <header>
+      <div>
+        <p class="eyebrow">LEGAL CASE INTELLIGENCE</p>
+        <h1>{{ case.name if case is defined else "Case Dashboard" }}</h1>
+        <p class="muted">Organize discovery. Track evidence. Identify gaps.</p>
+      </div>
+      <span class="pill">LOCAL MODE</span>
+    </header>
+
+    {% if cases is not none %}
+    <section class="stats">
+      <div class="stat"><span>Total Cases</span><strong>{{ cases|length }}</strong></div>
+      <div class="stat"><span>Open Cases</span><strong>{{ cases|selectattr('status','equalto','Open')|list|length }}</strong></div>
+      <div class="stat"><span>Workspace</span><strong>Active</strong></div>
+    </section>
+
+    <section class="panel">
+      <h2>Create New Case</h2>
+      <form action="/cases" method="post" class="form-grid">
+        <input name="name" placeholder="Client / Case Name" required>
+        <input name="number" placeholder="Case Number">
+        <input name="court" placeholder="Court / Jurisdiction">
+        <input name="notes" placeholder="Case Notes">
+        <button type="submit">+ Create Case</button>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="section-heading">
+        <h2>Case Files</h2>
+        <form action="/" method="get">
+          <input name="q" value="{{ query }}" placeholder="Search cases...">
+          <button>Search</button>
+        </form>
+      </div>
+      <div class="case-list">
+        {% for item in cases %}
+        <a class="case-row" href="/cases/{{ item.id }}">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <p>{{ item.number or "No case number" }} · {{ item.court or "Court not set" }}</p>
+          </div>
+          <span class="pill">{{ item.status }}</span>
+        </a>
+        {% else %}
+        <p class="muted">No cases found. Create your first case above.</p>
+        {% endfor %}
+      </div>
+    </section>
+
+    {% else %}
+    <a class="back" href="/">← Back to dashboard</a>
+
+    <section class="stats">
+      <div class="stat"><span>Case Number</span><strong>{{ case.number or "N/A" }}</strong></div>
+      <div class="stat"><span>Discovery Files</span><strong>{{ documents|length }}</strong></div>
+      <div class="stat"><span>Review Flags</span><strong>{{ findings|length }}</strong></div>
+    </section>
+
+    <section class="panel">
+      <h2>Case Overview</h2>
+      <p><b>Court:</b> {{ case.court or "Not specified" }}</p>
+      <p><b>Status:</b> {{ case.status }}</p>
+      <p><b>Notes:</b> {{ case.notes or "No notes" }}</p>
+    </section>
+
+    <section class="panel">
+      <h2>Discovery Documents</h2>
+      <form action="/cases/{{ case.id }}/upload" method="post"
+            enctype="multipart/form-data" class="form-grid">
+        <input type="file" name="file" accept=".pdf,.txt,.png,.jpg,.jpeg" required>
+        <select name="category">
+          <option>Police Report</option>
+          <option>Witness Statement</option>
+          <option>Body Camera</option>
+          <option>Forensic Report</option>
+          <option>Court Filing</option>
+          <option>Other</option>
+        </select>
+        <button>Upload Document</button>
+      </form>
+
+      {% for doc in documents %}
+      <div class="case-row">
+        <div>
+          <strong>{{ doc.filename }}</strong>
+          <p>{{ doc.category }}</p>
+        </div>
+        <a href="/documents/{{ doc.id }}">Download ↓</a>
+      </div>
+      {% else %}
+      <p class="muted">No documents uploaded.</p>
+      {% endfor %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">DISCOVERY INTELLIGENCE</p>
+      <h2>Evidence Gap Tracker</h2>
+      <p class="muted">Record missing evidence, conflicting testimony, and investigative questions.</p>
+
+      <form action="/cases/{{ case.id }}/findings" method="post" class="finding-form">
+        <input name="title" placeholder="Finding title" required>
+        <textarea name="description" placeholder="Describe the discrepancy or missing evidence"></textarea>
+        <input name="source" placeholder="Source reference / page number">
+        <button>+ Add Review Flag</button>
+      </form>
+
+      {% for finding in findings %}
+      <div class="finding">
+        <div>
+          <span class="pill">{{ finding.status }}</span>
+          <h3>{{ finding.title }}</h3>
+          <p>{{ finding.description }}</p>
+          <small>Source: {{ finding.source or "Not linked" }}</small>
+        </div>
+        <form action="/findings/{{ finding.id }}/toggle" method="post">
+          <button class="secondary">
+            {{ "Reopen" if finding.status == "Reviewed" else "Mark Reviewed" }}
+          </button>
+        </form>
+      </div>
+      {% else %}
+      <p class="muted">No review flags yet.</p>
+      {% endfor %}
+    </section>
+    {% endif %}
+  </main>
+</body>
+</html>
+
