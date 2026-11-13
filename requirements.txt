@@ -1,1 +1,361 @@
-pypdf>=4.0.0
+import csv
+import io
+import json
+import re
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+import streamlit as st
+from pypdf import PdfReader
+
+DEFAULT_CASES = [
+    {
+        "case_id": "CASE-001",
+        "category": "Fraud",
+        "status": "Open",
+        "priority": "High",
+    },
+    {
+        "case_id": "CASE-002",
+        "category": "Missing Documents",
+        "status": "Pending",
+        "priority": "Medium",
+    },
+    {
+        "case_id": "CASE-003",
+        "category": "Online Harassment",
+        "status": "Closed",
+        "priority": "Low",
+    },
+]
+
+DATA_FILE = Path(__file__).with_name("cases.json")
+ORGANIZED_OUTPUT = Path(__file__).with_name("organized_case_files")
+
+
+def load_cases():
+    if not DATA_FILE.exists():
+        save_cases(DEFAULT_CASES)
+        return list(DEFAULT_CASES)
+
+    try:
+        with DATA_FILE.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (json.JSONDecodeError, OSError):
+        return list(DEFAULT_CASES)
+
+    if isinstance(data, list) and data:
+        return data
+    return list(DEFAULT_CASES)
+
+
+def save_cases(records):
+    with DATA_FILE.open("w", encoding="utf-8") as file:
+        json.dump(records, file, indent=2)
+
+
+def sanitize_filename(value):
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]", "", str(value)).strip()
+    return cleaned or "unknown"
+
+
+def unique_destination(path):
+    if not path.exists():
+        return path
+
+    stem = path.stem
+    suffix = path.suffix
+    counter = 2
+    while True:
+        candidate = path.with_name(f"{stem}_{counter}{suffix}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
+
+
+def normalize_date_value(raw_date):
+    value = str(raw_date).strip()
+    if not value or value.lower() == "unknown-date":
+        return "unknown-date"
+
+    for fmt in (
+        "%Y-%m-%d",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+        "%b %d, %Y",
+        "%B %d, %Y",
+        "%d %b %Y",
+        "%d %B %Y",
+    ):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    value = value.replace("/", "-")
+    value = value.replace(" ", "-")
+    return value
+
+
+def export_csv(records):
+    output = io.StringIO()
+    writer = csv.DictWriter(
+        output,
+        fieldnames=["case_id", "category", "status", "priority"],
+    )
+    writer.writeheader()
+    writer.writerows(records)
+    return output.getvalue()
+
+
+def extract_text_from_pdf_bytes(pdf_bytes):
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    text_parts = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        text_parts.append(text)
+    return "\n".join(text_parts)
+
+
+def find_date_in_text(text):
+    patterns = [
+        r"\b(?:0?[1-9]|1[0-2])[/-](?:0?[1-9]|[12]\d|3[01])[/-](?:\d{2}|\d{4})\b",
+        r"\b(?:\d{4})-(?:0?[1-9]|1[0-2])-(?:0?[1-9]|[12]\d|3[01])\b",
+        r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return "unknown-date"
+
+
+def find_case_number_in_text(text):
+    patterns = [
+        r"\b(?:CASE|Case|Docket|DOCKET|Case No\.?|Case Number|No\.?|No)[#:\s-]*([A-Z]{2,}[-\s]?\d{2,})\b",
+        r"\b([A-Z]{2,}-\d{2,})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1) if match.lastindex else match.group(0)
+            return candidate.strip().upper().replace(" ", "-")
+    return "unknown-case"
+
+
+def find_last_name_in_text(text):
+    patterns = [
+        r"Defendant(?:\s*(?:Name|Last Name|Surname|Legal Name))?:?\s*([A-Z][A-Za-z'-.]+(?:\s+[A-Z][A-Za-z'-.]+)*)",
+        r"\bDefendant\s+([A-Z][A-Za-z'-.]+(?:\s+[A-Z][A-Za-z'-.]+)*)",
+        r"\b([A-Z][A-Za-z'-.]+),\s*(?:[A-Z][A-Za-z'-.]+)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            candidate = match.group(1).strip()
+            if "," in candidate:
+                candidate = candidate.split(",")[0]
+            parts = candidate.split()
+            if len(parts) > 1:
+                return parts[-1].title()
+            return candidate.title()
+    return "unknown-lastname"
+
+
+def infer_pdf_metadata(pdf_bytes):
+    try:
+        text = extract_text_from_pdf_bytes(pdf_bytes)
+    except Exception:
+        return {
+            "date": "unknown-date",
+            "case_number": "unknown-case",
+            "last_name": "unknown-lastname",
+        }
+
+    return {
+        "date": find_date_in_text(text),
+        "case_number": find_case_number_in_text(text),
+        "last_name": find_last_name_in_text(text),
+    }
+
+
+def organize_uploaded_pdfs(uploaded_files, override_map):
+    if not uploaded_files:
+        return []
+
+    ORGANIZED_OUTPUT.mkdir(exist_ok=True)
+    created = []
+
+    for uploaded_file in uploaded_files:
+        pdf_bytes = uploaded_file.getvalue()
+        metadata = infer_pdf_metadata(pdf_bytes)
+
+        override = override_map.get(uploaded_file.name, {})
+        date_value = override.get("date") or metadata["date"]
+        case_number = override.get("case_number") or metadata["case_number"]
+        last_name = override.get("last_name") or metadata["last_name"]
+
+        if date_value in ("", "unknown-date"):
+            date_value = "unknown-date"
+        if case_number in ("", "unknown-case"):
+            case_number = "unknown-case"
+        if last_name in ("", "unknown-lastname"):
+            last_name = "unknown-lastname"
+
+        normalized_date = normalize_date_value(date_value)
+        target_folder = ORGANIZED_OUTPUT / normalized_date
+        target_folder.mkdir(parents=True, exist_ok=True)
+
+        safe_base = f"{sanitize_filename(case_number)}_{sanitize_filename(last_name)}"
+        target_file = target_folder / f"{safe_base}.pdf"
+        target_file = unique_destination(target_file)
+
+        with target_file.open("wb") as destination:
+            destination.write(pdf_bytes)
+
+        created.append(str(target_file))
+
+    return created
+
+
+def add_new_case(case_id, category, status, priority):
+    records = load_cases()
+    case_id = str(case_id).strip().upper()
+    if not case_id:
+        raise ValueError("Case ID is required.")
+
+    for case in records:
+        if str(case.get("case_id", "")).upper() == case_id:
+            raise ValueError("That case ID already exists.")
+
+    new_case = {
+        "case_id": case_id,
+        "category": category.strip() or "Uncategorized",
+        "status": status.strip().title() or "Open",
+        "priority": priority.strip().title() or "Medium",
+    }
+
+    records.append(new_case)
+    save_cases(records)
+    return new_case
+
+
+st.set_page_config(page_title="Casefile Organizer", page_icon="📁", layout="wide")
+st.title("Casefile Organizer Dashboard")
+
+cases = load_cases()
+
+status_counts = {
+    "Open": sum(1 for case in cases if str(case.get("status", "")).lower() == "open"),
+    "Pending": sum(1 for case in cases if str(case.get("status", "")).lower() == "pending"),
+    "Closed": sum(1 for case in cases if str(case.get("status", "")).lower() == "closed"),
+}
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Cases", len(cases))
+col2.metric("Open", status_counts["Open"])
+col3.metric("Pending", status_counts["Pending"])
+col4.metric("Closed", status_counts["Closed"])
+
+with st.sidebar:
+    st.header("Add a case")
+    with st.form("add_case_form"):
+        case_id = st.text_input("Case ID")
+        category = st.text_input("Category")
+        status = st.selectbox("Status", ["Open", "Pending", "Closed"])
+        priority = st.selectbox("Priority", ["High", "Medium", "Low"])
+        submitted = st.form_submit_button("Save case")
+
+        if submitted:
+            try:
+                add_new_case(case_id, category, status, priority)
+                st.success(f"Case {case_id.upper()} saved successfully.")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
+search_text = st.text_input("Search by case ID or category")
+status_filter = st.selectbox("Filter by status", ["All", "Open", "Pending", "Closed"])
+
+filtered_cases = []
+for case in cases:
+    case_id = str(case.get("case_id", ""))
+    category = str(case.get("category", ""))
+    status_value = str(case.get("status", ""))
+
+    matches_search = not search_text or search_text.lower() in case_id.lower() or search_text.lower() in category.lower()
+    matches_status = status_filter == "All" or status_value.lower() == status_filter.lower()
+
+    if matches_search and matches_status:
+        filtered_cases.append(case)
+
+st.subheader("Case records")
+if filtered_cases:
+    st.dataframe(filtered_cases, hide_index=True, use_container_width=True)
+else:
+    st.info("No matching cases found.")
+
+csv_data = export_csv(filtered_cases if filtered_cases else cases)
+st.download_button(
+    label="Export CSV",
+    data=csv_data,
+    file_name="case_report.csv",
+    mime="text/csv",
+)
+
+st.markdown("---")
+st.subheader("Organize PDFs")
+
+with st.form("pdf_organizer_form"):
+    uploaded_files = st.file_uploader(
+        "Upload PDFs to organize",
+        type=["pdf"],
+        accept_multiple_files=True,
+    )
+
+    override_map = {}
+    if uploaded_files:
+        for index, uploaded_file in enumerate(uploaded_files):
+            metadata = infer_pdf_metadata(uploaded_file.getvalue())
+            st.caption(uploaded_file.name)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                date_value = st.text_input(
+                    f"Date for {uploaded_file.name}",
+                    value=metadata["date"],
+                    key=f"date_{index}",
+                )
+            with col2:
+                case_number = st.text_input(
+                    f"Case number for {uploaded_file.name}",
+                    value=metadata["case_number"],
+                    key=f"case_{index}",
+                )
+            with col3:
+                last_name = st.text_input(
+                    f"Last name for {uploaded_file.name}",
+                    value=metadata["last_name"],
+                    key=f"last_{index}",
+                )
+
+            override_map[uploaded_file.name] = {
+                "date": date_value,
+                "case_number": case_number,
+                "last_name": last_name,
+            }
+
+    submitted_files = st.form_submit_button("Organize uploaded PDFs")
+    if submitted_files and uploaded_files:
+        created_files = organize_uploaded_pdfs(uploaded_files, override_map)
+        if created_files:
+            st.success(f"Organized {len(created_files)} file(s).")
+            for created in created_files:
+                st.write(created)
+        else:
+            st.warning("No files were organized.")
+
+
+if __name__ == "__main__":
+    pass
+
